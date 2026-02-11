@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Life tracker</title>
+    <style>
+        :root { --bg: #ffffff; --ink: #000000; --gray: #cccccc; --cell: 14px; }
+        body { font-family: 'Courier New', monospace; background: var(--bg); color: var(--ink); margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        
+        .panel-left { flex: 1; border-right: 3px solid var(--ink); padding: 20px; display: flex; flex-direction: column; background: #fafafa; }
+        
+        .log-history {
+            flex: 1; 
+            border: none; 
+            background: transparent;
+            margin-bottom: 10px; 
+            padding-right: 5px; 
+            overflow-y: auto;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        .log-entry { 
+            background: #fff;
+            border: 1px solid #e1e8ed;
+            border-radius: 12px; 
+            padding: 12px;
+            margin-bottom: 10px; 
+            font-size: 14px; 
+            line-height: 1.4;
+            color: #0f1419;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        }
+        
+        .panel-right { flex: 5; padding: 20px 40px; overflow-y: scroll; }
+
+        h2 { border-bottom: 2px solid var(--ink); font-size: 14px; text-transform: uppercase; margin-bottom: 15px; }
+        .cat-header { background: var(--ink); color: #fff; padding: 5px 10px; font-weight: bold; display: flex; justify-content: space-between; margin-top: 25px; margin-bottom: 10px; }
+        .add-btn { cursor: pointer; color: #fff; border: 1px solid #fff; padding: 0 5px; }
+
+        .thread-row { display: flex; align-items: flex-start; margin-bottom: 15px; border-bottom: 1px dotted var(--gray); padding-bottom: 10px; }
+        .thread-meta { width: 160px; flex-shrink: 0; padding-right: 15px; font-size: 12px; position: relative; }
+        
+        .meta-controls { margin-top: 5px; opacity: 0.5; transition: opacity 0.2s; }
+        .thread-row:hover .meta-controls { opacity: 1; }
+        .ctrl-btn { cursor: pointer; padding: 0 3px; font-weight: bold; border: 1px solid #ccc; font-size: 10px; margin-right: 2px; }
+        .ctrl-btn:hover { background: #000; color: #fff; }
+        .del-btn { color: red; border-color: red; }
+
+        .grid-container { display: flex; flex-wrap: wrap; align-items: flex-start; }
+        .week-block { display: flex; gap: 2px; margin-right: 6px; margin-bottom: 6px; } 
+
+        .cell { width: var(--cell); height: var(--cell); border: 1px solid var(--gray); cursor: pointer; }
+        .cell[data-status="hit"] { background: var(--ink); border-color: var(--ink); }
+        .cell[data-status="miss"] { background: repeating-linear-gradient(45deg, #000, #000 2px, #fff 2px, #fff 4px); }
+        .cell.is-today { border: 2px solid blue !important; transform: scale(1.2); z-index: 10; }
+        .cell.off-routine { border: 1px dashed #555; opacity: 0.6; }
+        .cell.fulfilled { border: 1px dotted #999; opacity: 0.3; background: #f0f0f0; }
+        .cell.padding { border: none; cursor: default; pointer-events: none; opacity: 0; }
+
+        .modal { display: none; position: fixed; inset: 0; background: rgba(255,255,255,0.9); z-index: 9999; justify-content: center; align-items: center; }
+        .modal-box { background: #fff; border: 4px solid var(--ink); padding: 20px; width: 320px; box-shadow: 10px 10px 0 rgba(0,0,0,0.2); }
+        .modal-box input, .modal-box select { width: 100%; padding: 5px; margin-bottom: 10px; border: 1px solid #000; box-sizing: border-box; }
+        .btn-group { display: flex; gap: 10px; margin-top: 10px; }
+        .btn-group button { flex: 1; }
+        .controls-row { display: flex; justify-content: space-between; }
+        button { cursor: pointer; font-weight: bold; border: 2px solid var(--ink); background: #fff; padding: 5px 10px; }
+        button.black { background: var(--ink); color: #fff; }
+    </style>
+
+    <script>
+        window.onerror = function(msg, url, line) { alert("JS Error: " + msg + "\nLine: " + line); };
+        function showModal(id) { document.getElementById(id).style.display = 'flex'; }
+        function hideModal(id) { document.getElementById(id).style.display = 'none'; }
+
+        function deleteThread(id, name) {
+            if(confirm("Archive: " + name + "?")) {
+                fetch('/api/delete_thread', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id: id }) }).then(() => location.reload());
+            }
+        }
+        function moveThread(id, direction) {
+            fetch('/api/move_thread', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id: id, direction: direction }) }).then(() => location.reload());
+        }
+        
+        let currentCat = '';
+        function openAddModal(cat) {
+            currentCat = cat;
+            document.getElementById('catNameDisplay').innerText = cat;
+            showModal('addThreadModal');
+        }
+        function submitNewThread() {
+            const payload = {
+                name: document.getElementById('newThreadName').value,
+                category: currentCat,
+                redacted: document.getElementById('newThreadRedacted').value,
+                sub_category: document.getElementById('newThreadSubCat').value,
+                type: document.getElementById('newThreadType').value,
+                cadence: document.getElementById('newThreadCadence').value
+            };
+            fetch('/api/add_thread', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(r => r.json()).then(d => { if(d.success) location.reload(); else alert(d.error); });
+        }
+        
+        function saveContext() {
+            const payload = {
+                top_work: document.getElementById('ctxWork').value,
+                top_other: document.getElementById('ctxOther').value,
+                project: document.getElementById('ctxProject').value,
+                meds: document.getElementById('ctxMeds').checked,
+                off_routine: document.getElementById('ctxOff').checked,
+                off_reason: document.getElementById('ctxOffReason').value
+            };
+            
+            document.getElementById('btnSaveCtx').innerText = "...";
+            
+            fetch('/api/update_day_context', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+            }).then(() => location.reload()); 
+        }
+
+        let activeCell = null;
+        function handleCellClick(el) {
+            const status = el.getAttribute('data-status');
+            const next = (status === 'empty') ? 'hit' : (status === 'hit' ? 'miss' : 'empty');
+            if (next === 'miss') {
+                activeCell = el;
+                document.getElementById('missReason').value = "";
+                showModal('missModal');
+                document.getElementById('missReason').focus();
+            } else { updateSquare(el, next, ""); }
+        }
+        function submitMiss() {
+            if(activeCell) { updateSquare(activeCell, 'miss', document.getElementById('missReason').value); hideModal('missModal'); }
+        }
+        function updateSquare(el, status, reason) {
+            el.setAttribute('data-status', status);
+            if(status === 'hit') el.classList.remove('fulfilled');
+            fetch('/api/toggle_status', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ thread_id: el.getAttribute('data-id'), date: el.getAttribute('data-date'), status: status, miss_reason: reason })
+            }).then(() => location.reload()); 
+        }
+        function toggleOffField() {
+            const chk = document.getElementById('ctxOff').checked;
+            document.getElementById('ctxOffReason').style.display = chk ? 'block' : 'none';
+        }
+
+        // --- НОВА ФУНКЦІЯ ДЛЯ ПРАВОГО КЛІКУ ---
+        function handleRightClick(e, el) {
+            e.preventDefault(); // Блокуємо стандартне меню браузера
+            const dateStr = el.getAttribute('data-date');
+            
+            // Завантажуємо дані для цього дня
+            fetch('/api/get_day_info', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ date: dateStr })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if(data.success) {
+                    // Заповнюємо поля даними
+                    document.getElementById('ctxWork').value = data.work;
+                    document.getElementById('ctxOther').value = data.other;
+                    document.getElementById('ctxProject').value = data.project;
+                    document.getElementById('ctxMeds').checked = data.meds;
+                    document.getElementById('ctxOff').checked = data.off;
+                    document.getElementById('ctxOffReason').value = data.off_reason;
+                    toggleOffField();
+                    
+                    // Обробка поля історії (лога)
+                    let logArea = document.getElementById('dayHistoryLog');
+                    if (!logArea) {
+                        // Створюємо поле, якщо його немає
+                        logArea = document.createElement('textarea');
+                        logArea.id = 'dayHistoryLog';
+                        logArea.style.width = '100%';
+                        logArea.style.height = '150px';
+                        logArea.style.marginTop = '15px';
+                        logArea.style.padding = '10px';
+                        logArea.style.borderRadius = '5px';
+                        logArea.style.border = '1px solid #ccc';
+                        logArea.style.fontFamily = 'monospace';
+                        logArea.style.fontSize = '12px';
+                        logArea.readOnly = true; 
+                        
+                        // Вставляємо перед кнопками
+                        const btnGroup = document.querySelector('#contextModal .btn-group');
+                        document.querySelector('#contextModal .modal-box').insertBefore(logArea, btnGroup);
+                    }
+                    logArea.value = data.comments ? data.comments : "(No logs for " + dateStr + ")";
+                    
+                    // Змінюємо заголовок модалки
+                    document.querySelector('#contextModal h3').innerText = "History: " + dateStr;
+                    
+                    showModal('contextModal');
+                }
+            });
+        }
+    </script>
+</head>
+<body>
+
+<div class="panel-left">
+    <h2>Twitter</h2>
+    
+    <div class="log-history">
+        {% if ctx.comment_list %}
+            {% for msg in ctx.comment_list %}
+                <div class="log-entry">{{ msg }}</div>
+            {% endfor %}
+        {% else %}
+            <div style="color:#999; text-align:center; margin-top:50px;">No logs yet. Use Telegram Bot.</div>
+        {% endif %}
+    </div>
+
+    <div class="controls-row">
+        <button onclick="showModal('contextModal')" style="width:100%">[≡] DAY MENU</button>
+    </div>
+    <div style="margin-top:auto; font-size:10px; color:#555; border-top: 1px solid #ccc; padding-top: 10px;">
+        <div>Date: {{ today_date }}</div>
+        <div><b>40k: {{ ctx.date_40k }}</b></div>
+        <div>Week: {{ ctx.week_40k }}</div>
+    </div>
+</div>
+
+<div class="panel-right">
+    {% for cat in categories %}
+    <div class="cat-header">
+        <span>{{ cat|upper }}</span>
+        <span class="add-btn" onclick="openAddModal('{{ cat }}')">+</span>
+    </div>
+    {% for item in grouped_threads[cat] %}
+    <div class="thread-row">
+        <div class="thread-meta">
+            <b>{{ item.info.thread_name }}</b>
+            <div class="meta-controls">
+                <span class="ctrl-btn" onclick="moveThread('{{ item.info.thread_id }}', 'up')">↑</span>
+                <span class="ctrl-btn" onclick="moveThread('{{ item.info.thread_id }}', 'down')">↓</span>
+                <span class="ctrl-btn del-btn" onclick="deleteThread('{{ item.info.thread_id }}', '{{ item.info.thread_name }}')">x</span>
+            </div>
+            <br>
+            <span style="color:#777; font-size:10px;">{{ item.info.sub_category }}</span><br>
+            <span style="color:#999; font-size:9px;">{{ item.info.cadence }}</span>
+        </div>
+        
+        <div class="grid-container">
+            {% for week in item.weeks %}
+            <div class="week-block">
+                {% for day in week %}
+                    {% if day.is_padding %}
+                        <div class="cell padding"></div>
+                    {% else %}
+                        <div class="cell {% if day.is_today %}is-today{% endif %} {% if day.is_off_routine %}off-routine{% endif %} {% if day.is_fulfilled %}fulfilled{% endif %}"
+                             data-id="{{ item.info.thread_id }}"
+                             data-date="{{ day.date }}"
+                             data-status="{{ day.status }}"
+                             onclick="handleCellClick(this)"
+                             oncontextmenu="handleRightClick(event, this)"></div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+    {% endfor %}
+</div>
+
+<div id="addThreadModal" class="modal">
+    <div class="modal-box">
+        <h3>New: <span id="catNameDisplay"></span></h3>
+        <label>Name</label><input type="text" id="newThreadName">
+        <label>Hidden Name</label><input type="text" id="newThreadRedacted">
+        <label>Sub Category</label><input type="text" id="newThreadSubCat">
+        <label>Type</label>
+        <select id="newThreadType"><option value="perpetual">Perpetual</option><option value="quest">Quest</option><option value="frog">Frog</option></select>
+        <label>Frequency</label>
+        <select id="newThreadCadence">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="3x_week">3x / Week</option>
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Seasonally (Quarterly)</option>
+            <option value="yearly">Yearly</option>
+        </select>
+        <div class="btn-group"><button onclick="hideModal('addThreadModal')">Cancel</button><button class="black" onclick="submitNewThread()">Create</button></div>
+    </div>
+</div>
+
+<div id="contextModal" class="modal">
+    <div class="modal-box">
+        <h3>Day Context</h3>
+        <label>Work Priority</label><input type="text" id="ctxWork" value="{{ ctx.top_work }}">
+        <label>Self Priority</label><input type="text" id="ctxOther" value="{{ ctx.top_other }}">
+        <label>Project</label><input type="text" id="ctxProject" value="{{ ctx.project }}">
+        <div style="margin:10px 0;"><input type="checkbox" id="ctxMeds" style="width:auto;" {% if ctx.meds %}checked{% endif %}> Meds Taken</div>
+        <div style="margin:10px 0; border:1px solid red; padding:5px;">
+            <input type="checkbox" id="ctxOff" style="width:auto;" onchange="toggleOffField()" {% if ctx.off_routine %}checked{% endif %}> <b>OFF ROUTINE</b>
+            <input type="text" id="ctxOffReason" value="{{ ctx.off_reason }}" style="display:{% if ctx.off_routine %}block{% else %}none{% endif %}; margin-top:5px;" placeholder="Why?">
+        </div>
+        <div class="btn-group"><button onclick="hideModal('contextModal')">Close</button><button class="black" id="btnSaveCtx" onclick="saveContext()">Save All</button></div>
+    </div>
+</div>
+
+<div id="missModal" class="modal">
+    <div class="modal-box">
+        <h3>Reason for Miss</h3>
+        <input type="text" id="missReason" placeholder="...">
+        <div class="btn-group"><button onclick="hideModal('missModal')">Cancel</button><button class="black" onclick="submitMiss()">Confirm</button></div>
+    </div>
+</div>
+
+</body>
+</html>
