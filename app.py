@@ -14,14 +14,14 @@ from flask_apscheduler import APScheduler
 app = Flask(__name__)
 
 # --- CONFIG ---
-# Ці змінні треба прописати в Koyeb -> Settings -> Environment Variables
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_LOCAL_TOKEN_IF_NEEDED")
-# Хеші паролів (заміни на свої згенеровані)
-HASH_USER = "CHANGE_ME_USER_HASH" 
-HASH_ADMIN = "CHANGE_ME_ADMIN_HASH"
 
-# --- DATABASE CONNECTION ---
+# 1. Telegram Token
+# Беремо з Environment Variables. "YOUR_LOCAL..." тільки для локального тесту.
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_LOCAL_TOKEN_IF_NEEDED")
+
+# 2. Database Connection
 database_url = os.environ.get("DATABASE_URL")
+
 if database_url:
     # Фікс для Koyeb (вони дають postgres://, а SQLAlchemy хоче postgresql://)
     if database_url.startswith("postgres://"):
@@ -34,6 +34,10 @@ else:
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# 3. Security Hashes (Заміни на свої!)
+HASH_USER = "a080f87fefbcc9ddfe34650dd5c20659b852fd8cdd8e269a2bc5c3f4ad7cd7cf" 
+HASH_ADMIN = "a5a915b49d0188897ddbdcaf47868a28af8d06851f3430bbe43e49660f05760a"
+
 class Config:
     SCHEDULER_API_ENABLED = True
 
@@ -41,6 +45,11 @@ app.config.from_object(Config())
 
 db = SQLAlchemy(app)
 scheduler = APScheduler()
+
+# Ініціалізація бота
+if not TG_BOT_TOKEN or "YOUR_LOCAL" in TG_BOT_TOKEN:
+    print("WARNING: Telegram Token not set correctly!")
+    
 bot = telebot.TeleBot(TG_BOT_TOKEN)
 
 user_sessions = {}
@@ -442,8 +451,6 @@ def index():
         return render_template('dashboard.html', grouped_threads=grouped_threads, categories=categories, ctx=ctx, today_date=today.strftime('%Y-%m-%d'))
     except Exception as e: return f"CRITICAL ERROR: {str(e)}"
 
-# ІНШІ API РОУТИ (ТОЧНО ТАКІ ЯК БУЛИ, НЕ ДУБЛЮЮ ЩОБ НЕ ЗАСМІЧУВАТИ)
-# ... встав тут update_day_context, toggle_status, add_thread, delete_thread, move_thread, get_day_info з минулого коду ...
 @app.route('/api/get_day_info', methods=['POST'])
 def get_day_info():
     d_str = request.json.get('date')
