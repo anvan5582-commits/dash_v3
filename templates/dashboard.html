@@ -130,25 +130,30 @@
         function submitMiss() {
             if(activeCell) { updateSquare(activeCell, 'miss', document.getElementById('missReason').value); hideModal('missModal'); }
         }
+        
+        // --- ВИПРАВЛЕНА ФУНКЦІЯ (без location.reload) ---
         function updateSquare(el, status, reason) {
+            // Оновлюємо вигляд миттєво
             el.setAttribute('data-status', status);
             if(status === 'hit') el.classList.remove('fulfilled');
+            
+            // Відправляємо на сервер "тихо" (без перезавантаження)
             fetch('/api/toggle_status', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ thread_id: el.getAttribute('data-id'), date: el.getAttribute('data-date'), status: status, miss_reason: reason })
-            }).then(() => location.reload()); 
+            });
         }
+        // ------------------------------------------------
+
         function toggleOffField() {
             const chk = document.getElementById('ctxOff').checked;
             document.getElementById('ctxOffReason').style.display = chk ? 'block' : 'none';
         }
 
-        // --- НОВА ФУНКЦІЯ ДЛЯ ПРАВОГО КЛІКУ ---
         function handleRightClick(e, el) {
-            e.preventDefault(); // Блокуємо стандартне меню браузера
+            e.preventDefault(); 
             const dateStr = el.getAttribute('data-date');
             
-            // Завантажуємо дані для цього дня
             fetch('/api/get_day_info', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -157,7 +162,6 @@
             .then(r => r.json())
             .then(data => {
                 if(data.success) {
-                    // Заповнюємо поля даними
                     document.getElementById('ctxWork').value = data.work;
                     document.getElementById('ctxOther').value = data.other;
                     document.getElementById('ctxProject').value = data.project;
@@ -166,10 +170,8 @@
                     document.getElementById('ctxOffReason').value = data.off_reason;
                     toggleOffField();
                     
-                    // Обробка поля історії (лога)
                     let logArea = document.getElementById('dayHistoryLog');
                     if (!logArea) {
-                        // Створюємо поле, якщо його немає
                         logArea = document.createElement('textarea');
                         logArea.id = 'dayHistoryLog';
                         logArea.style.width = '100%';
@@ -182,13 +184,11 @@
                         logArea.style.fontSize = '12px';
                         logArea.readOnly = true; 
                         
-                        // Вставляємо перед кнопками
                         const btnGroup = document.querySelector('#contextModal .btn-group');
                         document.querySelector('#contextModal .modal-box').insertBefore(logArea, btnGroup);
                     }
                     logArea.value = data.comments ? data.comments : "(No logs for " + dateStr + ")";
                     
-                    // Змінюємо заголовок модалки
                     document.querySelector('#contextModal h3').innerText = "History: " + dateStr;
                     
                     showModal('contextModal');
@@ -250,6 +250,7 @@
                         <div class="cell padding"></div>
                     {% else %}
                         <div class="cell {% if day.is_today %}is-today{% endif %} {% if day.is_off_routine %}off-routine{% endif %} {% if day.is_fulfilled %}fulfilled{% endif %}"
+                             title="{{ day.miss_reason }}"
                              data-id="{{ item.info.thread_id }}"
                              data-date="{{ day.date }}"
                              data-status="{{ day.status }}"
