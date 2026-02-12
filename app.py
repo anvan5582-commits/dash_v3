@@ -42,13 +42,10 @@ scheduler = APScheduler()
 bot = None
 if TG_BOT_TOKEN and "YOUR_LOCAL" not in TG_BOT_TOKEN:
     bot = telebot.TeleBot(TG_BOT_TOKEN)
-else:
-    print("WARNING: Telegram Token not set.")
 
 user_sessions = {}
 
 # --- MODELS ---
-
 class Thread(db.Model):
     __tablename__ = 'threads'
     thread_id = db.Column(db.Integer, primary_key=True)
@@ -104,7 +101,6 @@ class BoardItem(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
 # --- LOGIC ---
-
 def get_date_40k(d_obj):
     iso = d_obj.isocalendar()
     return f"{str(iso[0])[2:]}.{iso[1]}.{iso[2]}"
@@ -171,11 +167,10 @@ def is_day_fulfilled(thread, date_obj, squares_map):
         target_hits = 1
         start_date = None
         end_date = None
-
         if thread.cadence == '3x_week':
-            target_hits = 3
             start_date = date_obj - timedelta(days=date_obj.weekday())
             end_date = start_date + timedelta(days=6)
+            target_hits = 3
         elif thread.cadence == 'weekly':
             start_date = date_obj - timedelta(days=date_obj.weekday())
             end_date = start_date + timedelta(days=6)
@@ -207,12 +202,9 @@ def is_day_fulfilled(thread, date_obj, squares_map):
         return False
     except: return False
 
-# --- BACKUP & RESTORE SYSTEM (JSON) ---
-
+# --- BACKUP & RESTORE ---
 def create_full_backup_json():
     data = {}
-    
-    # 1. Threads
     data['threads'] = [{
         'thread_id': t.thread_id, 'thread_name': t.thread_name, 'category': t.category,
         'status': t.status, 'rank': t.rank, 'created_at': str(t.created_at),
@@ -220,15 +212,11 @@ def create_full_backup_json():
         'sub_category': t.sub_category, 'type': t.type, 'cadence': t.cadence,
         'thread_name_redacted': t.thread_name_redacted
     } for t in Thread.query.all()]
-    
-    # 2. Squares
     data['squares'] = [{
         'square_id': s.square_id, 'thread_id': s.thread_id, 'period': str(s.period), 
         'status': s.status, 'chain_id': s.chain_id, 'chain_start': s.chain_start,
         'chain_end': s.chain_end, 'chain_end_reason': s.chain_end_reason
     } for s in Square.query.filter(Square.status != 'empty').all()]
-
-    # 3. Calendar
     data['calendar'] = [{
         'actual_date': str(c.actual_date), 'date_40k': c.date_40k, 'week_40k': c.week_40k,
         'top_work_priority': c.top_work_priority, 'top_other_priority': c.top_other_priority,
@@ -236,24 +224,17 @@ def create_full_backup_json():
         'project_type_this_week': c.project_type_this_week, 'day_meds': c.day_meds,
         'comments': c.comments
     } for c in Calendar.query.all()]
-    
-    # 4. Board
     data['board'] = [{'text': b.text} for b in BoardItem.query.all()]
-
-    # 5. Chains (для повноти бекапу)
     data['chains'] = [{
         'chain_id': c.chain_id, 'thread_id': c.thread_id,
         'chain_start_date': str(c.chain_start_date), 'chain_end_date': str(c.chain_end_date),
         'duration': c.duration, 'end_reason': c.end_reason
     } for c in Chain.query.all()]
-    
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 def restore_from_json(json_content):
     try:
         data = json.loads(json_content)
-        
-        # 1. Очищення
         db.session.query(Square).delete()
         db.session.query(Chain).delete()
         db.session.query(BoardItem).delete()
@@ -261,35 +242,30 @@ def restore_from_json(json_content):
         db.session.query(Thread).delete()
         db.session.commit()
         
-        # 2. Відновлюємо Threads
         for t in data.get('threads', []):
             dt = datetime.datetime.strptime(t['created_at'], '%Y-%m-%d').date()
             closed = datetime.datetime.strptime(t['closed_date'], '%Y-%m-%d').date() if t.get('closed_date') else None
             th = Thread(
                 thread_id=t['thread_id'], thread_name=t['thread_name'], category=t['category'],
                 status=t['status'], rank=t['rank'], created_at=dt, 
-                created_at_40k=t.get('created_at_40k'),
-                closed_date=closed, sub_category=t.get('sub_category'), 
-                type=t.get('type'), cadence=t.get('cadence'), 
-                thread_name_redacted=t.get('thread_name_redacted')
+                created_at_40k=t.get('created_at_40k'), closed_date=closed, 
+                sub_category=t.get('sub_category'), type=t.get('type'), 
+                cadence=t.get('cadence'), thread_name_redacted=t.get('thread_name_redacted')
             )
             db.session.add(th)
         db.session.commit() 
         
-        # 3. Відновлюємо Squares (ВАЖЛИВО: ігноруємо chain_id з JSON, щоб уникнути помилок)
         for s in data.get('squares', []):
             d_date = datetime.datetime.strptime(s['period'], '%Y-%m-%d').date()
             sq = Square(
                 square_id=s['square_id'], thread_id=s['thread_id'], period=d_date,
-                status=s['status'], 
-                chain_id=None,  # <--- ФІКС ПОМИЛКИ: скидаємо ланцюжок, щоб не було FK error
+                status=s['status'], chain_id=None,
                 chain_start=s.get('chain_start', False),
                 chain_end=s.get('chain_end', False), 
                 chain_end_reason=s.get('chain_end_reason', "")
             )
             db.session.add(sq)
             
-        # 4. Відновлюємо Calendar
         for c in data.get('calendar', []):
             d_date = datetime.datetime.strptime(c['actual_date'], '%Y-%m-%d').date()
             cal = Calendar(
@@ -303,14 +279,11 @@ def restore_from_json(json_content):
             )
             db.session.add(cal)
             
-        # 5. Відновлюємо Board
         for b in data.get('board', []):
             db.session.add(BoardItem(text=b['text']))
             
         db.session.commit()
         
-        # 6. Генеруємо ланцюжки (Chains) наново на основі завантажених квадратів
-        # Це гарантує цілісність даних і відсутність FK помилок
         active_threads = Thread.query.all()
         for th in active_threads:
             recalculate_chains(th.thread_id)
@@ -353,21 +326,16 @@ if bot:
             if not file_name.endswith('.json'):
                 bot.reply_to(message, "❌ Потрібен файл .json")
                 return
-
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
             json_content = downloaded_file.decode('utf-8')
-            
             bot.reply_to(message, "⏳ Відновлюю базу...")
-            
             with app.app_context():
                 success, msg = restore_from_json(json_content)
-            
             if success:
-                bot.reply_to(message, "✅ Успіх! База відновлена.")
+                bot.reply_to(message, "✅ Успіх! Всі дані на місці.")
             else:
                 bot.reply_to(message, f"❌ Помилка: {msg}")
-                
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
 
@@ -396,12 +364,18 @@ if bot:
                         if item:
                             db.session.delete(item)
                             db.session.commit()
-                            bot.reply_to(message, "🗑 Видалено.")
+                            bot.reply_to(message, "🗑 Видалено з дошки.")
             elif txt == "/list":
                 with app.app_context():
                     items = BoardItem.query.order_by(BoardItem.id.desc()).all()
                     msg = "\n".join([f"{item.id}. {item.text}" for item in items]) if items else "Empty."
                     bot.reply_to(message, msg)
+            elif txt.startswith("/b "):
+                note = txt[3:].strip()
+                with app.app_context():
+                    db.session.add(BoardItem(text=note))
+                    db.session.commit()
+                    bot.reply_to(message, "📌 Додано на дошку.")
             else:
                 try:
                     with app.app_context():
@@ -411,7 +385,7 @@ if bot:
                         if cal.comments: cal.comments += "\n" + entry
                         else: cal.comments = entry
                         db.session.commit()
-                    bot.reply_to(message, "🐦 Записано в лог.")
+                    bot.reply_to(message, "🐦 Лог збережено.")
                 except Exception as e:
                     bot.reply_to(message, f"DB Error: {e}")
                 
@@ -435,7 +409,6 @@ def index():
     try:
         today = date.today()
         cal = ensure_calendar_entry(today)
-        
         raw_comments = cal.comments or ""
         parsed_comments = []
         lines = [c for c in raw_comments.split('\n') if c.strip()]
@@ -525,6 +498,11 @@ def update_day_context():
     if 'meds' in data: cal.day_meds = data['meds']
     if 'off_routine' in data: cal.off_routine_flag = data['off_routine']
     if 'off_reason' in data: cal.off_routine_reason = data['off_reason']
+    if 'comments' in data and data['comments']:
+        timestamp = datetime.datetime.now().strftime("%H:%M")
+        new_entry = f"[{timestamp}] {data['comments']}"
+        if cal.comments: cal.comments += "\n" + new_entry
+        else: cal.comments = new_entry
     db.session.commit()
     return jsonify({'success': True})
 
@@ -588,17 +566,19 @@ def move_thread():
         db.session.commit()
     return jsonify({'success': True})
 
+# --- STARTUP LOGIC ---
+# Ось тут виправлення: виклик create_all() перед main
+with app.app_context():
+    db.create_all()
+    scheduler.init_app(app)
+    scheduler.start()
+    if not scheduler.get_job('auto_backup'):
+        scheduler.add_job(id='auto_backup', func=send_scheduled_backup, trigger='cron', hour=23, minute=59)
+
+if not any(t.name == "BotThread" for t in threading.enumerate()):
+    t = threading.Thread(target=run_bot_thread, name="BotThread")
+    t.daemon = True
+    t.start()
+
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-        scheduler.init_app(app)
-        scheduler.start()
-        if not scheduler.get_job('auto_backup'):
-            scheduler.add_job(id='auto_backup', func=send_scheduled_backup, trigger='cron', hour=23, minute=59)
-
-    if not any(t.name == "BotThread" for t in threading.enumerate()):
-        t = threading.Thread(target=run_bot_thread, name="BotThread")
-        t.daemon = True
-        t.start()
-
     app.run(host='0.0.0.0', port=8000, debug=False, use_reloader=False)
