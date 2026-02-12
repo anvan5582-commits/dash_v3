@@ -255,6 +255,13 @@ def create_full_backup_json():
     
     # 4. Board
     data['board'] = [{'text': b.text} for b in BoardItem.query.all()]
+
+    # 5. Chains (ОСЬ ЦЕ БУЛО ПРОПУЩЕНО)
+    data['chains'] = [{
+        'chain_id': c.chain_id, 'thread_id': c.thread_id, 
+        'chain_start_date': str(c.chain_start_date), 'chain_end_date': str(c.chain_end_date),
+        'duration': c.duration, 'end_reason': c.end_reason
+    } for c in Chain.query.all()]
     
     return json.dumps(data, indent=2, ensure_ascii=False)
 
