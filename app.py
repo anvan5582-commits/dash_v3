@@ -34,7 +34,7 @@ else:
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# 3. Security Hashes (Заміни на свої!)
+# 3. Security Hashes
 HASH_USER = "a080f87fefbcc9ddfe34650dd5c20659b852fd8cdd8e269a2bc5c3f4ad7cd7cf" 
 HASH_ADMIN = "a5a915b49d0188897ddbdcaf47868a28af8d06851f3430bbe43e49660f05760a"
 
@@ -546,14 +546,25 @@ def move_thread():
         db.session.commit()
     return jsonify({'success': True})
 
-if __name__ == '__main__':
-    with app.app_context(): db.create_all()
-    t = threading.Thread(target=run_bot_thread)
-    t.daemon = True
-    t.start()
+# --- ЗАПУСК (Цей код виконується завжди, навіть через Gunicorn) ---
+with app.app_context():
+    db.create_all()  # <--- Створюємо таблиці ТУТ
     
+    # Запускаємо планувальник
     scheduler.init_app(app)
     scheduler.start()
-    scheduler.add_job(id='auto_backup', func=send_scheduled_backup, trigger='cron', hour=23, minute=59)
-    
+    # Перевіряємо, чи задача вже є, щоб не дублювати при перезапуску
+    if not scheduler.get_job('auto_backup'):
+        scheduler.add_job(id='auto_backup', func=send_scheduled_backup, trigger='cron', hour=23, minute=59)
+
+# Запускаємо бота в окремому потоці
+# Перевірка os.environ.get('WERKZEUG_RUN_MAIN') потрібна, щоб бот не двоївся,
+# але на Koyeb (Gunicorn) це не критично, тому просто запускаємо:
+if not any(t.name == "BotThread" for t in threading.enumerate()):
+    t = threading.Thread(target=run_bot_thread, name="BotThread")
+    t.daemon = True
+    t.start()
+
+if __name__ == '__main__':
+    # Цей блок спрацює тільки якщо ти запускаєш файл локально через python app.py
     app.run(host='0.0.0.0', port=8000, debug=False, use_reloader=False)
