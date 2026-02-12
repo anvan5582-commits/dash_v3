@@ -6,7 +6,7 @@ import threading
 import json
 import telebot 
 from datetime import date, timedelta
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from flask_apscheduler import APScheduler
@@ -14,21 +14,23 @@ from flask_apscheduler import APScheduler
 app = Flask(__name__)
 
 # --- CONFIG ---
-# Змінні оточення для Koyeb
+# Змінні оточення (Koyeb)
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_LOCAL_TOKEN")
-# Хеші паролів (Встав свої або використовуй змінні оточення)
+# Хеші паролів (Встав свої або використовуй змінні)
 HASH_USER = os.environ.get("HASH_USER", "a080f87fefbcc9ddfe34650dd5c20659b852fd8cdd8e269a2bc5c3f4ad7cd7cf")
 HASH_ADMIN = os.environ.get("HASH_ADMIN", "a5a915b49d0188897ddbdcaf47868a28af8d06851f3430bbe43e49660f05760a")
 
-# Налаштування бази даних (Postgres для Koyeb, SQLite для локалки)
+# База даних
 database_url = os.environ.get("DATABASE_URL")
 basedir = os.path.abspath(os.path.dirname(__file__))
 
 if database_url:
+    # Фікс для Koyeb (postgres:// -> postgresql://)
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 else:
+    # Локальний режим
     db_filename = 'Life_tracker.db'
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, db_filename)
 
@@ -43,15 +45,16 @@ db = SQLAlchemy(app)
 scheduler = APScheduler()
 
 # Ініціалізація бота
-if not TG_BOT_TOKEN or "YOUR_LOCAL" in TG_BOT_TOKEN:
-    print("WARNING: Telegram Token not set correctly!")
-    bot = None
-else:
+bot = None
+if TG_BOT_TOKEN and "YOUR_LOCAL" not in TG_BOT_TOKEN:
     bot = telebot.TeleBot(TG_BOT_TOKEN)
+else:
+    print("WARNING: Telegram Token not set. Bot features disabled.")
 
 user_sessions = {}
 
-# --- MODELS (ПОВНА КОПІЯ ТВОЄЇ СТРУКТУРИ) ---
+# --- MODELS (ПОВНА СТРУКТУРА) ---
+
 class Thread(db.Model):
     __tablename__ = 'threads'
     thread_id = db.Column(db.Integer, primary_key=True)
@@ -60,6 +63,8 @@ class Thread(db.Model):
     status = db.Column(db.String(20), default='active')
     rank = db.Column(db.Integer, default=1)
     created_at = db.Column(db.Date, default=date.today)
+    
+    # Специфічні поля
     created_at_40k = db.Column(db.String(20))
     closed_date = db.Column(db.Date, nullable=True)
     thread_name_redacted = db.Column(db.String(100))
@@ -82,6 +87,8 @@ class Square(db.Model):
     thread_id = db.Column(db.Integer, db.ForeignKey('threads.thread_id'))
     period = db.Column(db.Date) 
     status = db.Column(db.String(10), default='empty')
+    
+    # Поля chain
     chain_id = db.Column(db.String(50), db.ForeignKey('chains.chain_id'), nullable=True)
     chain_start = db.Column(db.Boolean, default=False)
     chain_end = db.Column(db.Boolean, default=False)
@@ -90,8 +97,12 @@ class Square(db.Model):
 class Calendar(db.Model):
     __tablename__ = 'calendar'
     actual_date = db.Column(db.Date, primary_key=True)
+    
+    # Поля Warhammer
     date_40k = db.Column(db.String(20))
     week_40k = db.Column(db.String(20))
+    
+    # Context
     top_work_priority = db.Column(db.Text, default="")
     top_other_priority = db.Column(db.String(200), default="")
     off_routine_flag = db.Column(db.Boolean, default=False)
@@ -100,14 +111,15 @@ class Calendar(db.Model):
     day_meds = db.Column(db.Boolean, default=False) 
     comments = db.Column(db.Text, default="") 
 
-# Додаю це, щоб працювала "Дошка" на Postgres, якщо ти захочеш нею користуватись
+# Дошка (Для сумісності з JSON backup/restore на Postgres)
 class BoardItem(db.Model):
     __tablename__ = 'board_items'
     id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
-# --- LOGIC (ТВОЯ ПОВНА ЛОГІКА) ---
+# --- LOGIC ---
+
 def get_date_40k(d_obj):
     iso = d_obj.isocalendar()
     return f"{str(iso[0])[2:]}.{iso[1]}.{iso[2]}"
@@ -127,6 +139,7 @@ def ensure_calendar_entry(d_date):
 
 def recalculate_chains(thread_id):
     try:
+        # Очистка старих ланцюжків
         Chain.query.filter_by(thread_id=thread_id).delete()
         thread = db.session.get(Thread, thread_id)
         if not thread: return
@@ -206,19 +219,16 @@ def is_day_fulfilled(thread, date_obj, squares_map):
         
         current_sq = squares_map.get((thread.thread_id, date_obj))
         is_currently_hit = (current_sq and current_sq.status == 'hit')
-        
         if hits_count >= target_hits and not is_currently_hit: return True
         return False
-    except Exception as e: return False
+    except: return False
 
-# --- BACKUP SYSTEM (JSON) ---
-# Ми використовуємо JSON, тому що Postgres не має файлу .db
-# Я включив сюди ВСІ поля з твоїх моделей, щоб нічого не втратити.
+# --- BACKUP & RESTORE (JSON для Postgres з усіма полями) ---
 
 def create_full_backup_json():
     data = {}
     
-    # 1. Threads (Всі поля!)
+    # 1. Threads
     data['threads'] = [{
         'thread_id': t.thread_id, 'thread_name': t.thread_name, 'category': t.category,
         'status': t.status, 'rank': t.rank, 'created_at': str(t.created_at),
@@ -227,14 +237,14 @@ def create_full_backup_json():
         'thread_name_redacted': t.thread_name_redacted
     } for t in Thread.query.all()]
     
-    # 2. Squares (Всі поля!)
+    # 2. Squares
     data['squares'] = [{
         'square_id': s.square_id, 'thread_id': s.thread_id, 'period': str(s.period), 
         'status': s.status, 'chain_id': s.chain_id, 'chain_start': s.chain_start,
         'chain_end': s.chain_end, 'chain_end_reason': s.chain_end_reason
-    } for s in Square.query.all()]
+    } for s in Square.query.filter(Square.status != 'empty').all()]
 
-    # 3. Calendar (Всі поля, включаючи твіти/comments!)
+    # 3. Calendar
     data['calendar'] = [{
         'actual_date': str(c.actual_date), 'date_40k': c.date_40k, 'week_40k': c.week_40k,
         'top_work_priority': c.top_work_priority, 'top_other_priority': c.top_other_priority,
@@ -264,11 +274,14 @@ def restore_from_json(json_content):
         for t in data.get('threads', []):
             dt = datetime.datetime.strptime(t['created_at'], '%Y-%m-%d').date()
             closed = datetime.datetime.strptime(t['closed_date'], '%Y-%m-%d').date() if t.get('closed_date') else None
+            
             th = Thread(
                 thread_id=t['thread_id'], thread_name=t['thread_name'], category=t['category'],
-                status=t['status'], rank=t['rank'], created_at=dt, created_at_40k=t.get('created_at_40k'),
-                closed_date=closed, sub_category=t['sub_category'], type=t['type'], 
-                cadence=t['cadence'], thread_name_redacted=t['thread_name_redacted']
+                status=t['status'], rank=t['rank'], created_at=dt, 
+                created_at_40k=t.get('created_at_40k'),
+                closed_date=closed, sub_category=t.get('sub_category'), 
+                type=t.get('type'), cadence=t.get('cadence'), 
+                thread_name_redacted=t.get('thread_name_redacted')
             )
             db.session.add(th)
         db.session.commit()
@@ -278,8 +291,10 @@ def restore_from_json(json_content):
             d_date = datetime.datetime.strptime(s['period'], '%Y-%m-%d').date()
             sq = Square(
                 square_id=s['square_id'], thread_id=s['thread_id'], period=d_date,
-                status=s['status'], chain_id=s.get('chain_id'), chain_start=s.get('chain_start'),
-                chain_end=s.get('chain_end'), chain_end_reason=s.get('chain_end_reason')
+                status=s['status'], chain_id=s.get('chain_id'), 
+                chain_start=s.get('chain_start', False),
+                chain_end=s.get('chain_end', False), 
+                chain_end_reason=s.get('chain_end_reason', "")
             )
             db.session.add(sq)
             
@@ -289,8 +304,10 @@ def restore_from_json(json_content):
             cal = Calendar(
                 actual_date=d_date, date_40k=c.get('date_40k'), week_40k=c.get('week_40k'),
                 comments=c.get('comments'), top_work_priority=c.get('top_work_priority'),
-                top_other_priority=c.get('top_other_priority'), project_type_this_week=c.get('project_type_this_week'),
-                day_meds=c.get('day_meds', False), off_routine_flag=c.get('off_routine_flag', False),
+                top_other_priority=c.get('top_other_priority'), 
+                project_type_this_week=c.get('project_type_this_week'),
+                day_meds=c.get('day_meds', False), 
+                off_routine_flag=c.get('off_routine_flag', False),
                 off_routine_reason=c.get('off_routine_reason', "")
             )
             db.session.add(cal)
@@ -301,11 +318,12 @@ def restore_from_json(json_content):
             
         db.session.commit()
         
-        # Перерахунок Chains для надійності
-        for th in Thread.query.all():
+        # Перераховуємо Chains, щоб заповнити таблицю Chains даними
+        active_threads = Thread.query.all()
+        for th in active_threads:
             recalculate_chains(th.thread_id)
             
-        return True, "Відновлено."
+        return True, "Відновлено успішно."
     except Exception as e:
         return False, str(e)
 
@@ -343,18 +361,23 @@ if bot:
             if not file_name.endswith('.json'):
                 bot.reply_to(message, "❌ Потрібен файл .json")
                 return
+
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
             json_content = downloaded_file.decode('utf-8')
-            bot.reply_to(message, "⏳ Відновлюю повну базу...")
+            
+            bot.reply_to(message, "⏳ Відновлюю повну базу з файлу...")
+            
             with app.app_context():
                 success, msg = restore_from_json(json_content)
+            
             if success:
                 bot.reply_to(message, "✅ Успіх! Всі дані на місці.")
             else:
-                bot.reply_to(message, f"❌ Помилка: {msg}")
+                bot.reply_to(message, f"❌ Помилка відновлення: {msg}")
+                
         except Exception as e:
-            bot.reply_to(message, f"Error: {e}")
+            bot.reply_to(message, f"Critical Error: {e}")
 
     @bot.message_handler(func=lambda message: True)
     def handle_all_messages(message):
@@ -368,13 +391,12 @@ if bot:
                 bot.reply_to(message, "✅ User Mode.")
             elif pwd_hash == HASH_ADMIN:
                 user_sessions[chat_id] = "admin"
-                bot.reply_to(message, "👨‍💻 Admin Mode.")
+                bot.reply_to(message, "👨‍💻 Admin Mode.\nПришли мені .json файл для відновлення.")
             else: bot.reply_to(message, "❌ Пароль невірний.")
             return
         
-        # User: пише твіти в календар
         if user_sessions[chat_id] == "user":
-            # Робота з дошкою (Board)
+            # Якщо повідомлення починається з /del або /list - це для Дошки
             if txt.startswith('/del'):
                 parts = txt.split()
                 if len(parts) > 1 and parts[1].isdigit():
@@ -383,22 +405,24 @@ if bot:
                         if item:
                             db.session.delete(item)
                             db.session.commit()
-                            bot.reply_to(message, "🗑 Видалено з дошки.")
+                            bot.reply_to(message, "🗑 Видалено.")
             elif txt == "/list":
                 with app.app_context():
                     items = BoardItem.query.order_by(BoardItem.id.desc()).all()
                     msg = "\n".join([f"{item.id}. {item.text}" for item in items]) if items else "Empty."
                     bot.reply_to(message, msg)
-            # Якщо просто текст — це твіт в календар
+            
+            # Інакше - це твіт в календар
             else:
                 try:
                     with app.app_context():
                         cal = ensure_calendar_entry(date.today())
-                        entry = f"[{datetime.datetime.now().strftime('%H:%M')}] {txt}"
+                        timestamp = datetime.datetime.now().strftime("%H:%M")
+                        entry = f"[{timestamp}] {txt}"
                         if cal.comments: cal.comments += "\n" + entry
                         else: cal.comments = entry
                         db.session.commit()
-                    bot.reply_to(message, "🐦 Твіт записано.")
+                    bot.reply_to(message, "🐦 Записано в лог.")
                 except Exception as e:
                     bot.reply_to(message, f"DB Error: {e}")
                 
@@ -406,7 +430,7 @@ if bot:
             if txt == "/backup":
                 send_scheduled_backup()
             else:
-                bot.reply_to(message, "Admin console.")
+                bot.reply_to(message, "Кидай JSON файл для відновлення.")
 
 def run_bot_thread():
     if bot:
@@ -423,7 +447,7 @@ def index():
         today = date.today()
         cal = ensure_calendar_entry(today)
         
-        # Твіти з календаря
+        # Парсимо коментарі (твіти)
         raw_comments = cal.comments or ""
         parsed_comments = []
         lines = [c for c in raw_comments.split('\n') if c.strip()]
@@ -482,7 +506,6 @@ def index():
         return render_template('dashboard.html', grouped_threads=grouped_threads, categories=categories, ctx=ctx, today_date=today.strftime('%Y-%m-%d'))
     except Exception as e: return f"CRITICAL ERROR: {str(e)}"
 
-# ІНШІ API (ПОВНІСТЮ ЗБЕРЕЖЕНІ)
 @app.route('/api/get_day_info', methods=['POST'])
 def get_day_info():
     d_str = request.json.get('date')
@@ -515,11 +538,6 @@ def update_day_context():
     if 'meds' in data: cal.day_meds = data['meds']
     if 'off_routine' in data: cal.off_routine_flag = data['off_routine']
     if 'off_reason' in data: cal.off_routine_reason = data['off_reason']
-    if 'comments' in data and data['comments']:
-        timestamp = datetime.datetime.now().strftime("%H:%M")
-        new_entry = f"[{timestamp}] {data['comments']}"
-        if cal.comments: cal.comments += "\n" + new_entry
-        else: cal.comments = new_entry
     db.session.commit()
     return jsonify({'success': True})
 
