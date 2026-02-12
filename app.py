@@ -460,7 +460,15 @@ def index():
                 status = sq.status if sq else 'empty'
                 is_off = off_routine_days.get(curr, False)
                 is_fulfilled = is_day_fulfilled(th, curr, sq_map)
-                days.append({'date': curr.strftime('%Y-%m-%d'), 'is_today': (curr == today), 'status': status, 'is_off_routine': is_off, 'is_fulfilled': is_fulfilled, 'is_padding': False})
+                days.append({
+    'date': curr.strftime('%Y-%m-%d'), 
+    'is_today': (curr == today), 
+    'status': status, 
+    'is_off_routine': is_off, 
+    'is_fulfilled': is_fulfilled, 
+    'is_padding': False,
+    'miss_reason': sq.chain_end_reason if sq else ""
+})
             weeks = [days[i:i + 7] for i in range(0, len(days), 7)]
             grouped_threads[cat].append({'info': th, 'weeks': weeks})
         return render_template('dashboard.html', grouped_threads=grouped_threads, categories=categories, ctx=ctx, today_date=today.strftime('%Y-%m-%d'))
