@@ -6,7 +6,7 @@ import threading
 import json
 import telebot 
 from datetime import date, timedelta
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from flask_apscheduler import APScheduler
@@ -14,28 +14,25 @@ from flask_apscheduler import APScheduler
 app = Flask(__name__)
 
 # --- CONFIG ---
+# Змінні оточення для Koyeb
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_LOCAL_TOKEN")
+# Хеші паролів (Встав свої або використовуй змінні оточення)
+HASH_USER = os.environ.get("HASH_USER", "a080f87fefbcc9ddfe34650dd5c20659b852fd8cdd8e269a2bc5c3f4ad7cd7cf")
+HASH_ADMIN = os.environ.get("HASH_ADMIN", "a5a915b49d0188897ddbdcaf47868a28af8d06851f3430bbe43e49660f05760a")
 
-# 1. Telegram Token
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_LOCAL_TOKEN_IF_NEEDED")
-
-# 2. Database Connection
+# Налаштування бази даних (Postgres для Koyeb, SQLite для локалки)
 database_url = os.environ.get("DATABASE_URL")
+basedir = os.path.abspath(os.path.dirname(__file__))
 
 if database_url:
-    # Фікс для Koyeb (вони дають postgres://, а SQLAlchemy хоче postgresql://)
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 else:
-    # Локальний режим
-    basedir = os.path.abspath(os.path.dirname(__file__))
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'local.db')
+    db_filename = 'Life_tracker.db'
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, db_filename)
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# 3. Security Hashes
-HASH_USER = "a080f87fefbcc9ddfe34650dd5c20659b852fd8cdd8e269a2bc5c3f4ad7cd7cf" 
-HASH_ADMIN = "a5a915b49d0188897ddbdcaf47868a28af8d06851f3430bbe43e49660f05760a"
 
 class Config:
     SCHEDULER_API_ENABLED = True
@@ -45,14 +42,16 @@ app.config.from_object(Config())
 db = SQLAlchemy(app)
 scheduler = APScheduler()
 
+# Ініціалізація бота
 if not TG_BOT_TOKEN or "YOUR_LOCAL" in TG_BOT_TOKEN:
     print("WARNING: Telegram Token not set correctly!")
-    
-bot = telebot.TeleBot(TG_BOT_TOKEN)
+    bot = None
+else:
+    bot = telebot.TeleBot(TG_BOT_TOKEN)
 
 user_sessions = {}
 
-# --- MODELS ---
+# --- MODELS (ПОВНА КОПІЯ ТВОЄЇ СТРУКТУРИ) ---
 class Thread(db.Model):
     __tablename__ = 'threads'
     thread_id = db.Column(db.Integer, primary_key=True)
@@ -101,13 +100,14 @@ class Calendar(db.Model):
     day_meds = db.Column(db.Boolean, default=False) 
     comments = db.Column(db.Text, default="") 
 
+# Додаю це, щоб працювала "Дошка" на Postgres, якщо ти захочеш нею користуватись
 class BoardItem(db.Model):
     __tablename__ = 'board_items'
     id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
-# --- LOGIC ---
+# --- LOGIC (ТВОЯ ПОВНА ЛОГІКА) ---
 def get_date_40k(d_obj):
     iso = d_obj.isocalendar()
     return f"{str(iso[0])[2:]}.{iso[1]}.{iso[2]}"
@@ -174,10 +174,11 @@ def is_day_fulfilled(thread, date_obj, squares_map):
         target_hits = 1
         start_date = None
         end_date = None
+
         if thread.cadence == '3x_week':
+            target_hits = 3
             start_date = date_obj - timedelta(days=date_obj.weekday())
             end_date = start_date + timedelta(days=6)
-            target_hits = 3
         elif thread.cadence == 'weekly':
             start_date = date_obj - timedelta(days=date_obj.weekday())
             end_date = start_date + timedelta(days=6)
@@ -205,36 +206,53 @@ def is_day_fulfilled(thread, date_obj, squares_map):
         
         current_sq = squares_map.get((thread.thread_id, date_obj))
         is_currently_hit = (current_sq and current_sq.status == 'hit')
+        
         if hits_count >= target_hits and not is_currently_hit: return True
         return False
-    except: return False
+    except Exception as e: return False
 
-# --- IMPORT / EXPORT LOGIC ---
+# --- BACKUP SYSTEM (JSON) ---
+# Ми використовуємо JSON, тому що Postgres не має файлу .db
+# Я включив сюди ВСІ поля з твоїх моделей, щоб нічого не втратити.
 
 def create_full_backup_json():
     data = {}
+    
+    # 1. Threads (Всі поля!)
     data['threads'] = [{
         'thread_id': t.thread_id, 'thread_name': t.thread_name, 'category': t.category,
         'status': t.status, 'rank': t.rank, 'created_at': str(t.created_at),
+        'created_at_40k': t.created_at_40k, 'closed_date': str(t.closed_date) if t.closed_date else None,
         'sub_category': t.sub_category, 'type': t.type, 'cadence': t.cadence,
-        'redacted': t.thread_name_redacted
+        'thread_name_redacted': t.thread_name_redacted
     } for t in Thread.query.all()]
+    
+    # 2. Squares (Всі поля!)
     data['squares'] = [{
-        'thread_id': s.thread_id, 'period': str(s.period), 'status': s.status,
-        'miss_reason': s.chain_end_reason
-    } for s in Square.query.filter(Square.status != 'empty').all()]
+        'square_id': s.square_id, 'thread_id': s.thread_id, 'period': str(s.period), 
+        'status': s.status, 'chain_id': s.chain_id, 'chain_start': s.chain_start,
+        'chain_end': s.chain_end, 'chain_end_reason': s.chain_end_reason
+    } for s in Square.query.all()]
+
+    # 3. Calendar (Всі поля, включаючи твіти/comments!)
     data['calendar'] = [{
-        'date': str(c.actual_date), 'comments': c.comments,
-        'work': c.top_work_priority, 'other': c.top_other_priority,
-        'project': c.project_type_this_week, 'meds': c.day_meds,
-        'off': c.off_routine_flag, 'off_reason': c.off_routine_reason
+        'actual_date': str(c.actual_date), 'date_40k': c.date_40k, 'week_40k': c.week_40k,
+        'top_work_priority': c.top_work_priority, 'top_other_priority': c.top_other_priority,
+        'off_routine_flag': c.off_routine_flag, 'off_routine_reason': c.off_routine_reason,
+        'project_type_this_week': c.project_type_this_week, 'day_meds': c.day_meds,
+        'comments': c.comments
     } for c in Calendar.query.all()]
+    
+    # 4. Board
     data['board'] = [{'text': b.text} for b in BoardItem.query.all()]
+    
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 def restore_from_json(json_content):
     try:
         data = json.loads(json_content)
+        
+        # Очищення
         db.session.query(Square).delete()
         db.session.query(Chain).delete()
         db.session.query(BoardItem).delete()
@@ -242,45 +260,52 @@ def restore_from_json(json_content):
         db.session.query(Thread).delete()
         db.session.commit()
         
+        # Threads
         for t in data.get('threads', []):
             dt = datetime.datetime.strptime(t['created_at'], '%Y-%m-%d').date()
+            closed = datetime.datetime.strptime(t['closed_date'], '%Y-%m-%d').date() if t.get('closed_date') else None
             th = Thread(
                 thread_id=t['thread_id'], thread_name=t['thread_name'], category=t['category'],
-                status=t['status'], rank=t['rank'], sub_category=t['sub_category'],
-                type=t['type'], cadence=t['cadence'], thread_name_redacted=t['redacted'],
-                created_at=dt, created_at_40k=get_date_40k(dt)
+                status=t['status'], rank=t['rank'], created_at=dt, created_at_40k=t.get('created_at_40k'),
+                closed_date=closed, sub_category=t['sub_category'], type=t['type'], 
+                cadence=t['cadence'], thread_name_redacted=t['thread_name_redacted']
             )
             db.session.add(th)
-        db.session.commit() 
+        db.session.commit()
         
+        # Squares
         for s in data.get('squares', []):
             d_date = datetime.datetime.strptime(s['period'], '%Y-%m-%d').date()
-            sq_id = f"{s['thread_id']}_{s['period']}"
             sq = Square(
-                square_id=sq_id, thread_id=s['thread_id'], period=d_date,
-                status=s['status'], chain_end_reason=s.get('miss_reason', "")
+                square_id=s['square_id'], thread_id=s['thread_id'], period=d_date,
+                status=s['status'], chain_id=s.get('chain_id'), chain_start=s.get('chain_start'),
+                chain_end=s.get('chain_end'), chain_end_reason=s.get('chain_end_reason')
             )
             db.session.add(sq)
-        
+            
+        # Calendar
         for c in data.get('calendar', []):
-            d_date = datetime.datetime.strptime(c['date'], '%Y-%m-%d').date()
+            d_date = datetime.datetime.strptime(c['actual_date'], '%Y-%m-%d').date()
             cal = Calendar(
-                actual_date=d_date, date_40k=get_date_40k(d_date),
-                week_40k=f"{str(d_date.isocalendar()[0])[2:]}.{d_date.isocalendar()[1]}",
-                comments=c.get('comments'), top_work_priority=c.get('work'),
-                top_other_priority=c.get('other'), project_type_this_week=c.get('project'),
-                day_meds=c.get('meds', False), off_routine_flag=c.get('off', False),
-                off_routine_reason=c.get('off_reason', "")
+                actual_date=d_date, date_40k=c.get('date_40k'), week_40k=c.get('week_40k'),
+                comments=c.get('comments'), top_work_priority=c.get('top_work_priority'),
+                top_other_priority=c.get('top_other_priority'), project_type_this_week=c.get('project_type_this_week'),
+                day_meds=c.get('day_meds', False), off_routine_flag=c.get('off_routine_flag', False),
+                off_routine_reason=c.get('off_routine_reason', "")
             )
             db.session.add(cal)
             
+        # Board
         for b in data.get('board', []):
             db.session.add(BoardItem(text=b['text']))
             
         db.session.commit()
+        
+        # Перерахунок Chains для надійності
         for th in Thread.query.all():
             recalculate_chains(th.thread_id)
-        return True, "Відновлено успішно."
+            
+        return True, "Відновлено."
     except Exception as e:
         return False, str(e)
 
@@ -298,90 +323,124 @@ def send_scheduled_backup():
         print(f"Backup failed: {e}")
 
 # --- BOT ---
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "Regis System. Введіть пароль:")
+if bot:
+    @bot.message_handler(commands=['start'])
+    def send_welcome(message):
+        bot.reply_to(message, "Regis System. Введіть пароль:")
 
-@bot.message_handler(commands=['logout'])
-def handle_logout(message):
-    chat_id = message.chat.id
-    if chat_id in user_sessions:
-        user_sessions.pop(chat_id)
-        bot.reply_to(message, "Вийшли.")
+    @bot.message_handler(commands=['logout'])
+    def handle_logout(message):
+        chat_id = message.chat.id
+        if chat_id in user_sessions:
+            user_sessions.pop(chat_id)
+            bot.reply_to(message, "Вийшли.")
 
-@bot.message_handler(content_types=['document'])
-def handle_docs(message):
-    if user_sessions.get(message.chat.id) != "admin": return
-    try:
-        file_name = message.document.file_name
-        if not file_name.endswith('.json'):
-            bot.reply_to(message, "❌ Потрібен файл .json")
+    @bot.message_handler(content_types=['document'])
+    def handle_docs(message):
+        if user_sessions.get(message.chat.id) != "admin": return
+        try:
+            file_name = message.document.file_name
+            if not file_name.endswith('.json'):
+                bot.reply_to(message, "❌ Потрібен файл .json")
+                return
+            file_info = bot.get_file(message.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            json_content = downloaded_file.decode('utf-8')
+            bot.reply_to(message, "⏳ Відновлюю повну базу...")
+            with app.app_context():
+                success, msg = restore_from_json(json_content)
+            if success:
+                bot.reply_to(message, "✅ Успіх! Всі дані на місці.")
+            else:
+                bot.reply_to(message, f"❌ Помилка: {msg}")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+
+    @bot.message_handler(func=lambda message: True)
+    def handle_all_messages(message):
+        chat_id = message.chat.id
+        txt = message.text.strip()
+        
+        if chat_id not in user_sessions:
+            pwd_hash = hashlib.sha256(txt.encode()).hexdigest()
+            if pwd_hash == HASH_USER:
+                user_sessions[chat_id] = "user"
+                bot.reply_to(message, "✅ User Mode.")
+            elif pwd_hash == HASH_ADMIN:
+                user_sessions[chat_id] = "admin"
+                bot.reply_to(message, "👨‍💻 Admin Mode.")
+            else: bot.reply_to(message, "❌ Пароль невірний.")
             return
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        json_content = downloaded_file.decode('utf-8')
-        bot.reply_to(message, "⏳ Відновлюю базу з файлу...")
-        with app.app_context():
-            success, msg = restore_from_json(json_content)
-        if success:
-            bot.reply_to(message, "✅ Успіх! База відновлена.")
-        else:
-            bot.reply_to(message, f"❌ Помилка: {msg}")
-    except Exception as e:
-        bot.reply_to(message, f"Error: {e}")
-
-@bot.message_handler(func=lambda message: True)
-def handle_all_messages(message):
-    chat_id = message.chat.id
-    txt = message.text.strip()
-    
-    if chat_id not in user_sessions:
-        pwd_hash = hashlib.sha256(txt.encode()).hexdigest()
-        if pwd_hash == HASH_USER:
-            user_sessions[chat_id] = "user"
-            bot.reply_to(message, "✅ User Mode.")
-        elif pwd_hash == HASH_ADMIN:
-            user_sessions[chat_id] = "admin"
-            bot.reply_to(message, "👨‍💻 Admin Mode.")
-        else: bot.reply_to(message, "❌ Пароль невірний.")
-        return
-    
-    if user_sessions[chat_id] == "user":
-        if txt.startswith('/del'):
-            parts = txt.split()
-            if len(parts) > 1 and parts[1].isdigit():
+        
+        # User: пише твіти в календар
+        if user_sessions[chat_id] == "user":
+            # Робота з дошкою (Board)
+            if txt.startswith('/del'):
+                parts = txt.split()
+                if len(parts) > 1 and parts[1].isdigit():
+                    with app.app_context():
+                        item = db.session.get(BoardItem, int(parts[1]))
+                        if item:
+                            db.session.delete(item)
+                            db.session.commit()
+                            bot.reply_to(message, "🗑 Видалено з дошки.")
+            elif txt == "/list":
                 with app.app_context():
-                    item = db.session.get(BoardItem, int(parts[1]))
-                    if item:
-                        db.session.delete(item)
+                    items = BoardItem.query.order_by(BoardItem.id.desc()).all()
+                    msg = "\n".join([f"{item.id}. {item.text}" for item in items]) if items else "Empty."
+                    bot.reply_to(message, msg)
+            # Якщо просто текст — це твіт в календар
+            else:
+                try:
+                    with app.app_context():
+                        cal = ensure_calendar_entry(date.today())
+                        entry = f"[{datetime.datetime.now().strftime('%H:%M')}] {txt}"
+                        if cal.comments: cal.comments += "\n" + entry
+                        else: cal.comments = entry
                         db.session.commit()
-                        bot.reply_to(message, "🗑 Видалено.")
-        elif txt == "/list":
-            with app.app_context():
-                items = BoardItem.query.order_by(BoardItem.id.desc()).all()
-                msg = "\n".join([f"{item.id}. {item.text}" for item in items]) if items else "Empty."
-                bot.reply_to(message, msg)
-        else:
-            with app.app_context():
-                db.session.add(BoardItem(text=txt))
-                db.session.commit()
-                bot.reply_to(message, "📌 Додано.")
-            
-    elif user_sessions[chat_id] == "admin":
-        if txt == "/backup":
-            send_scheduled_backup()
-        else:
-            bot.reply_to(message, "Для відновлення просто перешли мені .json файл.")
+                    bot.reply_to(message, "🐦 Твіт записано.")
+                except Exception as e:
+                    bot.reply_to(message, f"DB Error: {e}")
+                
+        elif user_sessions[chat_id] == "admin":
+            if txt == "/backup":
+                send_scheduled_backup()
+            else:
+                bot.reply_to(message, "Admin console.")
 
-# --- ROUTER ---
+def run_bot_thread():
+    if bot:
+        try:
+            print("Bot polling started...")
+            bot.polling(none_stop=True)
+        except Exception as e:
+            print(f"Bot crash: {e}")
+
+# --- WEB ROUTES ---
 @app.route('/')
 def index():
     try:
         today = date.today()
         cal = ensure_calendar_entry(today)
+        
+        # Твіти з календаря
+        raw_comments = cal.comments or ""
+        parsed_comments = []
+        lines = [c for c in raw_comments.split('\n') if c.strip()]
+        for line in lines:
+            if line.startswith('[') and ']' in line:
+                end_bracket = line.find(']')
+                time_str = line[1:end_bracket]
+                text_str = line[end_bracket+1:].strip()
+                parsed_comments.append({'time': time_str, 'text': text_str})
+            else:
+                parsed_comments.append({'time': '', 'text': line})
+        parsed_comments.reverse()
+
+        # Дошка
         board_items = BoardItem.query.order_by(BoardItem.id.desc()).all()
         board_data = [{'id': b.id, 'text': b.text} for b in board_items]
-        
+
         ctx = {
             'top_work': cal.top_work_priority or "",
             'top_other': cal.top_other_priority or "",
@@ -389,6 +448,7 @@ def index():
             'meds': cal.day_meds,
             'off_routine': cal.off_routine_flag,
             'off_reason': cal.off_routine_reason or "",
+            'comment_list': parsed_comments,
             'board_data': board_data,
             'date_40k': cal.date_40k,
             'week_40k': cal.week_40k
@@ -422,6 +482,7 @@ def index():
         return render_template('dashboard.html', grouped_threads=grouped_threads, categories=categories, ctx=ctx, today_date=today.strftime('%Y-%m-%d'))
     except Exception as e: return f"CRITICAL ERROR: {str(e)}"
 
+# ІНШІ API (ПОВНІСТЮ ЗБЕРЕЖЕНІ)
 @app.route('/api/get_day_info', methods=['POST'])
 def get_day_info():
     d_str = request.json.get('date')
@@ -454,6 +515,11 @@ def update_day_context():
     if 'meds' in data: cal.day_meds = data['meds']
     if 'off_routine' in data: cal.off_routine_flag = data['off_routine']
     if 'off_reason' in data: cal.off_routine_reason = data['off_reason']
+    if 'comments' in data and data['comments']:
+        timestamp = datetime.datetime.now().strftime("%H:%M")
+        new_entry = f"[{timestamp}] {data['comments']}"
+        if cal.comments: cal.comments += "\n" + new_entry
+        else: cal.comments = new_entry
     db.session.commit()
     return jsonify({'success': True})
 
@@ -517,26 +583,14 @@ def move_thread():
         db.session.commit()
     return jsonify({'success': True})
 
-# --- ДОДАНО ВИЗНАЧЕННЯ ФУНКЦІЇ, ЯКУ МИ ПРОПУСТИЛИ ---
-def run_bot_thread():
-    try:
-        print("Bot polling started...")
-        bot.polling(none_stop=True)
-    except Exception as e:
-        print(f"Bot crash: {e}")
-
 # --- STARTUP LOGIC ---
-# Виконується при старті gunicorn (один раз)
 with app.app_context():
-    db.create_all() # Створення таблиць
-    
-    # Scheduler
+    db.create_all()
     scheduler.init_app(app)
     scheduler.start()
     if not scheduler.get_job('auto_backup'):
         scheduler.add_job(id='auto_backup', func=send_scheduled_backup, trigger='cron', hour=23, minute=59)
 
-# Запуск бота (обережно, щоб не дублювався в воркерах)
 if not any(t.name == "BotThread" for t in threading.enumerate()):
     t = threading.Thread(target=run_bot_thread, name="BotThread")
     t.daemon = True
