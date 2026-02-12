@@ -19,16 +19,35 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
 
+        /* Сам контейнер одного запису */
         .log-entry { 
             background: #fff;
-            border: 1px solid #e1e8ed;
-            border-radius: 12px; 
-            padding: 12px;
-            margin-bottom: 10px; 
+            border-bottom: 1px solid #eee; /* Тонка лінія замість рамки */
+            padding: 10px 5px;
+            margin-bottom: 5px; 
             font-size: 14px; 
             line-height: 1.4;
             color: #0f1419;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            display: flex; /* Щоб час і текст були в один рядок */
+            align-items: baseline; /* Вирівнювання по тексту */
+            gap: 12px; /* Відступ між часом і текстом */
+        }
+
+        /* Стиль для часу (сірий, звичайний) */
+        .log-time {
+            color: #888;
+            font-size: 0.9em;
+            font-family: monospace;
+            white-space: nowrap; /* Щоб час не переносився */
+            min-width: 45px; /* Фіксована ширина для вирівнювання */
+        }
+
+        /* Стиль для тексту (жирний, трохи більший) */
+        .log-text {
+            font-weight: 700; /* Жирний шрифт */
+            font-size: 1.05em; /* Трохи збільшений розмір */
+            color: #000;
+            word-wrap: break-word; /* Перенесення довгих слів */
         }
         
         .panel-right { flex: 5; padding: 20px 40px; overflow-y: scroll; }
@@ -281,7 +300,10 @@
     <div class="log-history">
         {% if ctx.comment_list %}
             {% for msg in ctx.comment_list %}
-                <div class="log-entry">{{ msg }}</div>
+                <div class="log-entry">
+                    <span class="log-time">{{ msg.time if msg.time else "--:--" }}</span>
+                    <span class="log-text">{{ msg.text }}</span>
+                </div>
             {% endfor %}
         {% else %}
             <div style="color:#999; text-align:center; margin-top:50px;">No logs yet. Use Telegram Bot.</div>
