@@ -16,7 +16,6 @@ app = Flask(__name__)
 # --- CONFIG ---
 
 # 1. Telegram Token
-# Беремо з Environment Variables. "YOUR_LOCAL..." тільки для локального тесту.
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_LOCAL_TOKEN_IF_NEEDED")
 
 # 2. Database Connection
@@ -28,7 +27,7 @@ if database_url:
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 else:
-    # Локальний режим (якщо запускаєш на компі)
+    # Локальний режим
     basedir = os.path.abspath(os.path.dirname(__file__))
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'local.db')
 
@@ -46,7 +45,6 @@ app.config.from_object(Config())
 db = SQLAlchemy(app)
 scheduler = APScheduler()
 
-# Ініціалізація бота
 if not TG_BOT_TOKEN or "YOUR_LOCAL" in TG_BOT_TOKEN:
     print("WARNING: Telegram Token not set correctly!")
     
@@ -214,41 +212,29 @@ def is_day_fulfilled(thread, date_obj, squares_map):
 # --- IMPORT / EXPORT LOGIC ---
 
 def create_full_backup_json():
-    # Збираємо всі дані в один великий словник
     data = {}
-    
-    # 1. Threads
     data['threads'] = [{
         'thread_id': t.thread_id, 'thread_name': t.thread_name, 'category': t.category,
         'status': t.status, 'rank': t.rank, 'created_at': str(t.created_at),
         'sub_category': t.sub_category, 'type': t.type, 'cadence': t.cadence,
         'redacted': t.thread_name_redacted
     } for t in Thread.query.all()]
-    
-    # 2. Squares
     data['squares'] = [{
         'thread_id': s.thread_id, 'period': str(s.period), 'status': s.status,
         'miss_reason': s.chain_end_reason
     } for s in Square.query.filter(Square.status != 'empty').all()]
-
-    # 3. Calendar
     data['calendar'] = [{
         'date': str(c.actual_date), 'comments': c.comments,
         'work': c.top_work_priority, 'other': c.top_other_priority,
         'project': c.project_type_this_week, 'meds': c.day_meds,
         'off': c.off_routine_flag, 'off_reason': c.off_routine_reason
     } for c in Calendar.query.all()]
-    
-    # 4. Board
     data['board'] = [{'text': b.text} for b in BoardItem.query.all()]
-    
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 def restore_from_json(json_content):
     try:
         data = json.loads(json_content)
-        
-        # ОЧИЩЕННЯ ПОТОЧНОЇ БАЗИ
         db.session.query(Square).delete()
         db.session.query(Chain).delete()
         db.session.query(BoardItem).delete()
@@ -256,8 +242,6 @@ def restore_from_json(json_content):
         db.session.query(Thread).delete()
         db.session.commit()
         
-        # ВІДНОВЛЕННЯ
-        # Threads
         for t in data.get('threads', []):
             dt = datetime.datetime.strptime(t['created_at'], '%Y-%m-%d').date()
             th = Thread(
@@ -269,7 +253,6 @@ def restore_from_json(json_content):
             db.session.add(th)
         db.session.commit() 
         
-        # Squares
         for s in data.get('squares', []):
             d_date = datetime.datetime.strptime(s['period'], '%Y-%m-%d').date()
             sq_id = f"{s['thread_id']}_{s['period']}"
@@ -279,7 +262,6 @@ def restore_from_json(json_content):
             )
             db.session.add(sq)
         
-        # Calendar
         for c in data.get('calendar', []):
             d_date = datetime.datetime.strptime(c['date'], '%Y-%m-%d').date()
             cal = Calendar(
@@ -292,16 +274,12 @@ def restore_from_json(json_content):
             )
             db.session.add(cal)
             
-        # Board
         for b in data.get('board', []):
             db.session.add(BoardItem(text=b['text']))
             
         db.session.commit()
-        
-        # Перерахунок Chains
         for th in Thread.query.all():
             recalculate_chains(th.thread_id)
-            
         return True, "Відновлено успішно."
     except Exception as e:
         return False, str(e)
@@ -331,7 +309,6 @@ def handle_logout(message):
         user_sessions.pop(chat_id)
         bot.reply_to(message, "Вийшли.")
 
-# ОБРОБКА ФАЙЛІВ (RESTORE)
 @bot.message_handler(content_types=['document'])
 def handle_docs(message):
     if user_sessions.get(message.chat.id) != "admin": return
@@ -340,22 +317,16 @@ def handle_docs(message):
         if not file_name.endswith('.json'):
             bot.reply_to(message, "❌ Потрібен файл .json")
             return
-
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         json_content = downloaded_file.decode('utf-8')
-        
         bot.reply_to(message, "⏳ Відновлюю базу з файлу...")
-        
-        # Виконуємо відновлення в контексті програми
         with app.app_context():
             success, msg = restore_from_json(json_content)
-        
         if success:
             bot.reply_to(message, "✅ Успіх! База відновлена.")
         else:
             bot.reply_to(message, f"❌ Помилка: {msg}")
-            
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
 
@@ -371,7 +342,7 @@ def handle_all_messages(message):
             bot.reply_to(message, "✅ User Mode.")
         elif pwd_hash == HASH_ADMIN:
             user_sessions[chat_id] = "admin"
-            bot.reply_to(message, "👨‍💻 Admin Mode.\nПришли мені .json файл, щоб відновити базу.")
+            bot.reply_to(message, "👨‍💻 Admin Mode.")
         else: bot.reply_to(message, "❌ Пароль невірний.")
         return
     
@@ -546,25 +517,30 @@ def move_thread():
         db.session.commit()
     return jsonify({'success': True})
 
-# --- ЗАПУСК (Цей код виконується завжди, навіть через Gunicorn) ---
+# --- ДОДАНО ВИЗНАЧЕННЯ ФУНКЦІЇ, ЯКУ МИ ПРОПУСТИЛИ ---
+def run_bot_thread():
+    try:
+        print("Bot polling started...")
+        bot.polling(none_stop=True)
+    except Exception as e:
+        print(f"Bot crash: {e}")
+
+# --- STARTUP LOGIC ---
+# Виконується при старті gunicorn (один раз)
 with app.app_context():
-    db.create_all()  # <--- Створюємо таблиці ТУТ
+    db.create_all() # Створення таблиць
     
-    # Запускаємо планувальник
+    # Scheduler
     scheduler.init_app(app)
     scheduler.start()
-    # Перевіряємо, чи задача вже є, щоб не дублювати при перезапуску
     if not scheduler.get_job('auto_backup'):
         scheduler.add_job(id='auto_backup', func=send_scheduled_backup, trigger='cron', hour=23, minute=59)
 
-# Запускаємо бота в окремому потоці
-# Перевірка os.environ.get('WERKZEUG_RUN_MAIN') потрібна, щоб бот не двоївся,
-# але на Koyeb (Gunicorn) це не критично, тому просто запускаємо:
+# Запуск бота (обережно, щоб не дублювався в воркерах)
 if not any(t.name == "BotThread" for t in threading.enumerate()):
     t = threading.Thread(target=run_bot_thread, name="BotThread")
     t.daemon = True
     t.start()
 
 if __name__ == '__main__':
-    # Цей блок спрацює тільки якщо ти запускаєш файл локально через python app.py
     app.run(host='0.0.0.0', port=8000, debug=False, use_reloader=False)
