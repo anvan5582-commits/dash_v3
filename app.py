@@ -309,14 +309,14 @@ def send_scheduled_backup():
 if bot:
     @bot.message_handler(commands=['start'])
     def send_welcome(message):
-        bot.reply_to(message, "Regis System. Введіть пароль:")
+        bot.reply_to(message, "Enter your password:")
 
     @bot.message_handler(commands=['logout'])
     def handle_logout(message):
         chat_id = message.chat.id
         if chat_id in user_sessions:
             user_sessions.pop(chat_id)
-            bot.reply_to(message, "Вийшли.")
+            bot.reply_to(message, "ok")
 
     @bot.message_handler(content_types=['document'])
     def handle_docs(message):
@@ -324,18 +324,18 @@ if bot:
         try:
             file_name = message.document.file_name
             if not file_name.endswith('.json'):
-                bot.reply_to(message, "❌ Потрібен файл .json")
+                bot.reply_to(message, "❌ I need an .json file")
                 return
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
             json_content = downloaded_file.decode('utf-8')
-            bot.reply_to(message, "⏳ Відновлюю базу...")
+            bot.reply_to(message, "⏳ restoring...")
             with app.app_context():
                 success, msg = restore_from_json(json_content)
             if success:
-                bot.reply_to(message, "✅ Успіх! Всі дані на місці.")
+                bot.reply_to(message, "✅ Success.")
             else:
-                bot.reply_to(message, f"❌ Помилка: {msg}")
+                bot.reply_to(message, f"❌ Error: {msg}")
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
 
@@ -351,8 +351,8 @@ if bot:
                 bot.reply_to(message, "✅ User Mode.")
             elif pwd_hash == HASH_ADMIN:
                 user_sessions[chat_id] = "admin"
-                bot.reply_to(message, "👨‍💻 Admin Mode.\nПришли мені .json файл для відновлення.")
-            else: bot.reply_to(message, "❌ Пароль невірний.")
+                bot.reply_to(message, "👨‍💻 Admin Mode.")
+            else: bot.reply_to(message, "❌ wrong password.")
             return
         
         if user_sessions[chat_id] == "user":
@@ -364,7 +364,7 @@ if bot:
                         if item:
                             db.session.delete(item)
                             db.session.commit()
-                            bot.reply_to(message, "🗑 Видалено з дошки.")
+                            bot.reply_to(message, "🗑 ok.")
             elif txt == "/list":
                 with app.app_context():
                     items = BoardItem.query.order_by(BoardItem.id.desc()).all()
@@ -375,7 +375,7 @@ if bot:
                 with app.app_context():
                     db.session.add(BoardItem(text=note))
                     db.session.commit()
-                    bot.reply_to(message, "📌 Додано на дошку.")
+                    bot.reply_to(message, "📌 added.")
             else:
                 try:
                     with app.app_context():
@@ -385,7 +385,7 @@ if bot:
                         if cal.comments: cal.comments += "\n" + entry
                         else: cal.comments = entry
                         db.session.commit()
-                    bot.reply_to(message, "🐦 Лог збережено.")
+                    bot.reply_to(message, "🐦 saved.")
                 except Exception as e:
                     bot.reply_to(message, f"DB Error: {e}")
                 
@@ -393,7 +393,7 @@ if bot:
             if txt == "/backup":
                 send_scheduled_backup()
             else:
-                bot.reply_to(message, "Кидай JSON файл для відновлення.")
+                bot.reply_to(message, "bro, where is json")
 
 def run_bot_thread():
     if bot:
@@ -575,7 +575,6 @@ def move_thread():
     return jsonify({'success': True})
 
 # --- STARTUP LOGIC ---
-# Ось тут виправлення: виклик create_all() перед main
 with app.app_context():
     db.create_all()
     scheduler.init_app(app)
