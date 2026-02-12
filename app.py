@@ -6,7 +6,7 @@ import threading
 import json
 import telebot 
 from datetime import date, timedelta
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from flask_apscheduler import APScheduler
@@ -14,23 +14,18 @@ from flask_apscheduler import APScheduler
 app = Flask(__name__)
 
 # --- CONFIG ---
-# Змінні оточення (Koyeb)
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_LOCAL_TOKEN")
-# Хеші паролів (Встав свої або використовуй змінні)
 HASH_USER = os.environ.get("HASH_USER", "a080f87fefbcc9ddfe34650dd5c20659b852fd8cdd8e269a2bc5c3f4ad7cd7cf")
 HASH_ADMIN = os.environ.get("HASH_ADMIN", "a5a915b49d0188897ddbdcaf47868a28af8d06851f3430bbe43e49660f05760a")
 
-# База даних
 database_url = os.environ.get("DATABASE_URL")
 basedir = os.path.abspath(os.path.dirname(__file__))
 
 if database_url:
-    # Фікс для Koyeb (postgres:// -> postgresql://)
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 else:
-    # Локальний режим
     db_filename = 'Life_tracker.db'
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, db_filename)
 
@@ -44,16 +39,15 @@ app.config.from_object(Config())
 db = SQLAlchemy(app)
 scheduler = APScheduler()
 
-# Ініціалізація бота
 bot = None
 if TG_BOT_TOKEN and "YOUR_LOCAL" not in TG_BOT_TOKEN:
     bot = telebot.TeleBot(TG_BOT_TOKEN)
 else:
-    print("WARNING: Telegram Token not set. Bot features disabled.")
+    print("WARNING: Telegram Token not set.")
 
 user_sessions = {}
 
-# --- MODELS (ПОВНА СТРУКТУРА) ---
+# --- MODELS ---
 
 class Thread(db.Model):
     __tablename__ = 'threads'
@@ -63,8 +57,6 @@ class Thread(db.Model):
     status = db.Column(db.String(20), default='active')
     rank = db.Column(db.Integer, default=1)
     created_at = db.Column(db.Date, default=date.today)
-    
-    # Специфічні поля
     created_at_40k = db.Column(db.String(20))
     closed_date = db.Column(db.Date, nullable=True)
     thread_name_redacted = db.Column(db.String(100))
@@ -87,8 +79,6 @@ class Square(db.Model):
     thread_id = db.Column(db.Integer, db.ForeignKey('threads.thread_id'))
     period = db.Column(db.Date) 
     status = db.Column(db.String(10), default='empty')
-    
-    # Поля chain
     chain_id = db.Column(db.String(50), db.ForeignKey('chains.chain_id'), nullable=True)
     chain_start = db.Column(db.Boolean, default=False)
     chain_end = db.Column(db.Boolean, default=False)
@@ -97,12 +87,8 @@ class Square(db.Model):
 class Calendar(db.Model):
     __tablename__ = 'calendar'
     actual_date = db.Column(db.Date, primary_key=True)
-    
-    # Поля Warhammer
     date_40k = db.Column(db.String(20))
     week_40k = db.Column(db.String(20))
-    
-    # Context
     top_work_priority = db.Column(db.Text, default="")
     top_other_priority = db.Column(db.String(200), default="")
     off_routine_flag = db.Column(db.Boolean, default=False)
@@ -111,7 +97,6 @@ class Calendar(db.Model):
     day_meds = db.Column(db.Boolean, default=False) 
     comments = db.Column(db.Text, default="") 
 
-# Дошка (Для сумісності з JSON backup/restore на Postgres)
 class BoardItem(db.Model):
     __tablename__ = 'board_items'
     id = db.Column(db.Integer, primary_key=True)
@@ -139,7 +124,6 @@ def ensure_calendar_entry(d_date):
 
 def recalculate_chains(thread_id):
     try:
-        # Очистка старих ланцюжків
         Chain.query.filter_by(thread_id=thread_id).delete()
         thread = db.session.get(Thread, thread_id)
         if not thread: return
@@ -223,7 +207,7 @@ def is_day_fulfilled(thread, date_obj, squares_map):
         return False
     except: return False
 
-# --- BACKUP & RESTORE (JSON для Postgres з усіма полями) ---
+# --- BACKUP & RESTORE SYSTEM (JSON) ---
 
 def create_full_backup_json():
     data = {}
@@ -256,9 +240,9 @@ def create_full_backup_json():
     # 4. Board
     data['board'] = [{'text': b.text} for b in BoardItem.query.all()]
 
-    # 5. Chains (ОСЬ ЦЕ БУЛО ПРОПУЩЕНО)
+    # 5. Chains (для повноти бекапу)
     data['chains'] = [{
-        'chain_id': c.chain_id, 'thread_id': c.thread_id, 
+        'chain_id': c.chain_id, 'thread_id': c.thread_id,
         'chain_start_date': str(c.chain_start_date), 'chain_end_date': str(c.chain_end_date),
         'duration': c.duration, 'end_reason': c.end_reason
     } for c in Chain.query.all()]
@@ -269,7 +253,7 @@ def restore_from_json(json_content):
     try:
         data = json.loads(json_content)
         
-        # Очищення
+        # 1. Очищення
         db.session.query(Square).delete()
         db.session.query(Chain).delete()
         db.session.query(BoardItem).delete()
@@ -277,11 +261,10 @@ def restore_from_json(json_content):
         db.session.query(Thread).delete()
         db.session.commit()
         
-        # Threads
+        # 2. Відновлюємо Threads
         for t in data.get('threads', []):
             dt = datetime.datetime.strptime(t['created_at'], '%Y-%m-%d').date()
             closed = datetime.datetime.strptime(t['closed_date'], '%Y-%m-%d').date() if t.get('closed_date') else None
-            
             th = Thread(
                 thread_id=t['thread_id'], thread_name=t['thread_name'], category=t['category'],
                 status=t['status'], rank=t['rank'], created_at=dt, 
@@ -291,21 +274,22 @@ def restore_from_json(json_content):
                 thread_name_redacted=t.get('thread_name_redacted')
             )
             db.session.add(th)
-        db.session.commit()
+        db.session.commit() 
         
-        # Squares
+        # 3. Відновлюємо Squares (ВАЖЛИВО: ігноруємо chain_id з JSON, щоб уникнути помилок)
         for s in data.get('squares', []):
             d_date = datetime.datetime.strptime(s['period'], '%Y-%m-%d').date()
             sq = Square(
                 square_id=s['square_id'], thread_id=s['thread_id'], period=d_date,
-                status=s['status'], chain_id=s.get('chain_id'), 
+                status=s['status'], 
+                chain_id=None,  # <--- ФІКС ПОМИЛКИ: скидаємо ланцюжок, щоб не було FK error
                 chain_start=s.get('chain_start', False),
                 chain_end=s.get('chain_end', False), 
                 chain_end_reason=s.get('chain_end_reason', "")
             )
             db.session.add(sq)
             
-        # Calendar
+        # 4. Відновлюємо Calendar
         for c in data.get('calendar', []):
             d_date = datetime.datetime.strptime(c['actual_date'], '%Y-%m-%d').date()
             cal = Calendar(
@@ -319,13 +303,14 @@ def restore_from_json(json_content):
             )
             db.session.add(cal)
             
-        # Board
+        # 5. Відновлюємо Board
         for b in data.get('board', []):
             db.session.add(BoardItem(text=b['text']))
             
         db.session.commit()
         
-        # Перераховуємо Chains, щоб заповнити таблицю Chains даними
+        # 6. Генеруємо ланцюжки (Chains) наново на основі завантажених квадратів
+        # Це гарантує цілісність даних і відсутність FK помилок
         active_threads = Thread.query.all()
         for th in active_threads:
             recalculate_chains(th.thread_id)
@@ -373,18 +358,18 @@ if bot:
             downloaded_file = bot.download_file(file_info.file_path)
             json_content = downloaded_file.decode('utf-8')
             
-            bot.reply_to(message, "⏳ Відновлюю повну базу з файлу...")
+            bot.reply_to(message, "⏳ Відновлюю базу...")
             
             with app.app_context():
                 success, msg = restore_from_json(json_content)
             
             if success:
-                bot.reply_to(message, "✅ Успіх! Всі дані на місці.")
+                bot.reply_to(message, "✅ Успіх! База відновлена.")
             else:
-                bot.reply_to(message, f"❌ Помилка відновлення: {msg}")
+                bot.reply_to(message, f"❌ Помилка: {msg}")
                 
         except Exception as e:
-            bot.reply_to(message, f"Critical Error: {e}")
+            bot.reply_to(message, f"Error: {e}")
 
     @bot.message_handler(func=lambda message: True)
     def handle_all_messages(message):
@@ -403,7 +388,6 @@ if bot:
             return
         
         if user_sessions[chat_id] == "user":
-            # Якщо повідомлення починається з /del або /list - це для Дошки
             if txt.startswith('/del'):
                 parts = txt.split()
                 if len(parts) > 1 and parts[1].isdigit():
@@ -418,8 +402,6 @@ if bot:
                     items = BoardItem.query.order_by(BoardItem.id.desc()).all()
                     msg = "\n".join([f"{item.id}. {item.text}" for item in items]) if items else "Empty."
                     bot.reply_to(message, msg)
-            
-            # Інакше - це твіт в календар
             else:
                 try:
                     with app.app_context():
@@ -454,7 +436,6 @@ def index():
         today = date.today()
         cal = ensure_calendar_entry(today)
         
-        # Парсимо коментарі (твіти)
         raw_comments = cal.comments or ""
         parsed_comments = []
         lines = [c for c in raw_comments.split('\n') if c.strip()]
@@ -468,7 +449,6 @@ def index():
                 parsed_comments.append({'time': '', 'text': line})
         parsed_comments.reverse()
 
-        # Дошка
         board_items = BoardItem.query.order_by(BoardItem.id.desc()).all()
         board_data = [{'id': b.id, 'text': b.text} for b in board_items]
 
@@ -608,18 +588,17 @@ def move_thread():
         db.session.commit()
     return jsonify({'success': True})
 
-# --- STARTUP LOGIC ---
-with app.app_context():
-    db.create_all()
-    scheduler.init_app(app)
-    scheduler.start()
-    if not scheduler.get_job('auto_backup'):
-        scheduler.add_job(id='auto_backup', func=send_scheduled_backup, trigger='cron', hour=23, minute=59)
-
-if not any(t.name == "BotThread" for t in threading.enumerate()):
-    t = threading.Thread(target=run_bot_thread, name="BotThread")
-    t.daemon = True
-    t.start()
-
 if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+        scheduler.init_app(app)
+        scheduler.start()
+        if not scheduler.get_job('auto_backup'):
+            scheduler.add_job(id='auto_backup', func=send_scheduled_backup, trigger='cron', hour=23, minute=59)
+
+    if not any(t.name == "BotThread" for t in threading.enumerate()):
+        t = threading.Thread(target=run_bot_thread, name="BotThread")
+        t.daemon = True
+        t.start()
+
     app.run(host='0.0.0.0', port=8000, debug=False, use_reloader=False)
