@@ -49,13 +49,43 @@
         .grid-container { display: flex; flex-wrap: wrap; align-items: flex-start; }
         .week-block { display: flex; gap: 2px; margin-right: 6px; margin-bottom: 6px; } 
 
-        .cell { width: var(--cell); height: var(--cell); border: 1px solid var(--gray); cursor: pointer; }
+        .cell { width: var(--cell); height: var(--cell); border: 1px solid var(--gray); cursor: pointer; position: relative; }
         .cell[data-status="hit"] { background: var(--ink); border-color: var(--ink); }
         .cell[data-status="miss"] { background: repeating-linear-gradient(45deg, #000, #000 2px, #fff 2px, #fff 4px); }
         .cell.is-today { border: 2px solid blue !important; transform: scale(1.2); z-index: 10; }
         .cell.off-routine { border: 1px dashed #555; opacity: 0.6; }
         .cell.fulfilled { border: 1px dotted #999; opacity: 0.3; background: #f0f0f0; }
         .cell.padding { border: none; cursor: default; pointer-events: none; opacity: 0; }
+
+        /* --- НОВИЙ СТИЛЬ ДЛЯ ПІДКАЗОК (TOOLTIP) --- */
+        .cell[data-reason]:hover::after {
+            content: attr(data-reason);
+            position: absolute;
+            bottom: 130%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.85);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            white-space: nowrap;
+            z-index: 999;
+            pointer-events: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        /* Стрілочка вниз для підказки */
+        .cell[data-reason]:hover::before {
+            content: '';
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            margin-left: -4px;
+            border-width: 4px;
+            border-style: solid;
+            border-color: rgba(0,0,0,0.85) transparent transparent transparent;
+            z-index: 999;
+        }
 
         .modal { display: none; position: fixed; inset: 0; background: rgba(255,255,255,0.9); z-index: 9999; justify-content: center; align-items: center; }
         .modal-box { background: #fff; border: 4px solid var(--ink); padding: 20px; width: 320px; box-shadow: 10px 10px 0 rgba(0,0,0,0.2); }
@@ -127,23 +157,70 @@
                 document.getElementById('missReason').focus();
             } else { updateSquare(el, next, ""); }
         }
+        
         function submitMiss() {
-            if(activeCell) { updateSquare(activeCell, 'miss', document.getElementById('missReason').value); hideModal('missModal'); }
+            if(activeCell) { 
+                const reason = document.getElementById('missReason').value;
+                updateSquare(activeCell, 'miss', reason); 
+                hideModal('missModal'); 
+            }
         }
         
-        // --- ВИПРАВЛЕНА ФУНКЦІЯ (без location.reload) ---
         function updateSquare(el, status, reason) {
-            // Оновлюємо вигляд миттєво
+            // 1. Оновлюємо статус
             el.setAttribute('data-status', status);
-            if(status === 'hit') el.classList.remove('fulfilled');
             
-            // Відправляємо на сервер "тихо" (без перезавантаження)
+            // 2. ВАЖЛИВО: Оновлюємо текст підказки для CSS
+            if (status === 'miss' && reason) {
+                el.setAttribute('data-reason', reason);
+            } else {
+                el.removeAttribute('data-reason');
+            }
+
+            // 3. Класи
+            el.className = 'cell ' + (el.classList.contains('is-today') ? 'is-today ' : '') + 
+                           (el.classList.contains('off-routine') ? 'off-routine ' : '') +
+                           (el.classList.contains('padding') ? 'padding ' : ''); 
+            
+            // 4. Оновлюємо сірі квадратики (тижневі цілі)
+            const row = el.closest('.thread-row');
+            updateRowVisuals(row);
+
+            // 5. Відправляємо на сервер
             fetch('/api/toggle_status', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ thread_id: el.getAttribute('data-id'), date: el.getAttribute('data-date'), status: status, miss_reason: reason })
             });
         }
-        // ------------------------------------------------
+
+        // Логіка для "сірих" виконаних днів
+        function updateRowVisuals(threadRow) {
+            const cadence = threadRow.getAttribute('data-cadence');
+            let target = 0;
+            if (cadence === 'weekly') target = 1;
+            if (cadence === '3x_week') target = 3;
+            
+            if (target > 0) {
+                const weeks = threadRow.querySelectorAll('.week-block');
+                weeks.forEach(week => {
+                    const cells = week.querySelectorAll('.cell');
+                    let hits = 0;
+                    cells.forEach(c => { 
+                        if(c.getAttribute('data-status') === 'hit') hits++; 
+                    });
+                    
+                    cells.forEach(c => {
+                        const status = c.getAttribute('data-status');
+                        if (status !== 'hit' && status !== 'miss') {
+                            if (hits >= target) c.classList.add('fulfilled');
+                            else c.classList.remove('fulfilled');
+                        } else {
+                            c.classList.remove('fulfilled');
+                        }
+                    });
+                });
+            }
+        }
 
         function toggleOffField() {
             const chk = document.getElementById('ctxOff').checked;
@@ -190,7 +267,6 @@
                     logArea.value = data.comments ? data.comments : "(No logs for " + dateStr + ")";
                     
                     document.querySelector('#contextModal h3').innerText = "History: " + dateStr;
-                    
                     showModal('contextModal');
                 }
             });
@@ -229,7 +305,7 @@
         <span class="add-btn" onclick="openAddModal('{{ cat }}')">+</span>
     </div>
     {% for item in grouped_threads[cat] %}
-    <div class="thread-row">
+    <div class="thread-row" data-cadence="{{ item.info.cadence }}">
         <div class="thread-meta">
             <b>{{ item.info.thread_name }}</b>
             <div class="meta-controls">
@@ -250,7 +326,7 @@
                         <div class="cell padding"></div>
                     {% else %}
                         <div class="cell {% if day.is_today %}is-today{% endif %} {% if day.is_off_routine %}off-routine{% endif %} {% if day.is_fulfilled %}fulfilled{% endif %}"
-                             title="{{ day.miss_reason }}"
+                             {% if day.miss_reason %}data-reason="{{ day.miss_reason }}"{% endif %}
                              data-id="{{ item.info.thread_id }}"
                              data-date="{{ day.date }}"
                              data-status="{{ day.status }}"
